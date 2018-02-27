@@ -421,7 +421,39 @@ func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) 
 	cek, err := decrypter.decryptKey(recipientHeaders, &recipient, generator)
 	if err == nil {
 		// Found a valid CEK -- let's try to decrypt.
-		plaintext, err = cipher.decrypt(cek, authData, parts)
+		// add support to A128CBC+H256 algorithm
+		if headers.getEncryption() == A128CBC_HS256_DEPRECATED {
+			cekReader := josecipher.NewConcatKDF(
+				crypto.SHA256,
+				append(cek, []byte{0, 0, 0, 128}...),
+				[]byte(A128CBC_HS256_DEPRECATED),
+				[]byte{0, 0, 0, 0},
+				[]byte{0, 0, 0, 0},
+				[]byte("Encryption"),
+				[]byte{},
+			)
+
+			cikReader := josecipher.NewConcatKDF(
+				crypto.SHA256,
+				append(cek, []byte{0, 0, 0, 128}...),
+				[]byte(A128CBC_HS256_DEPRECATED),
+				[]byte{0, 0, 0, 0},
+				[]byte{0, 0, 0, 0},
+				[]byte("Integration"),
+				[]byte{},
+			)
+
+			decryptedCEK := make([]byte, 16)
+			decryptedCIK := make([]byte, 16)
+			_, _ = cekReader.Read(decryptedCEK)
+			_, _ = cikReader.Read(decryptedCIK)
+
+			combinedKey := append(decryptedCEK, decryptedCIK...)
+
+			plaintext, err = cipher.decrypt(combinedKey, authData, parts)
+		} else {
+			plaintext, err = cipher.decrypt(cek, authData, parts)
+		}
 	}
 
 	if plaintext == nil {
