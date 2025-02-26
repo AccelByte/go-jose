@@ -247,10 +247,11 @@ func (parsed *rawJSONWebSignature) sanitized() (*JSONWebSignature, error) {
 
 // parseSignedCompact parses a message in compact format.
 func parseSignedCompact(input string) (*JSONWebSignature, error) {
-	parts := strings.Split(input, ".")
-	if len(parts) != 3 {
+	// Three parts is two separators (backport of upstream fix for CVE-2025-27144)
+	if strings.Count(input, ".") != 2 {
 		return nil, fmt.Errorf("square/go-jose: compact JWS format must have three parts")
 	}
+	parts := strings.SplitN(input, ".", 3)
 
 	rawProtected, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
