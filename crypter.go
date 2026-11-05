@@ -464,7 +464,7 @@ func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) 
 	}
 
 	// The "zip" header parameter may only be present in the protected header.
-	if comp := obj.protected.getCompression(); comp != "" {
+	if comp := obj.compression(); comp != "" {
 		plaintext, err = decompress(comp, plaintext)
 	}
 
@@ -574,8 +574,11 @@ func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Heade
 	}
 
 	// The "zip" header parameter may only be present in the protected header.
-	if comp := obj.protected.getCompression(); comp != "" {
+	if comp := obj.compression(); comp != "" {
 		plaintext, err = decompress(comp, plaintext)
+		if err != nil {
+			return -1, Header{}, nil, err
+		}
 	}
 
 	sanitized, err := headers.sanitized()
@@ -584,4 +587,14 @@ func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Heade
 	}
 
 	return index, sanitized, plaintext, err
+}
+
+// compression returns the "zip" header parameter, which may only be present in
+// the protected header. A message without a protected header (possible in the
+// JSON serialization) is treated as uncompressed instead of panicking.
+func (obj JSONWebEncryption) compression() CompressionAlgorithm {
+	if obj.protected == nil {
+		return ""
+	}
+	return obj.protected.getCompression()
 }
