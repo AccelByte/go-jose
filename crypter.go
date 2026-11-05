@@ -477,7 +477,7 @@ func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) 
 // and the plaintext.
 //
 // Automatically decompresses plaintext, but returns an error if the decompressed
-// data would be >250kB or >3x the size of the compressed data, whichever is larger.
+// data would be >250kB or >10x the size of the compressed data, whichever is larger.
 func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Header, []byte, error) {
 	globalHeaders := obj.mergedHeaders(nil)
 

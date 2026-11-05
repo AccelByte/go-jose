@@ -277,9 +277,8 @@ func (ctx aeadContentCipherDeprecated) decrypt(key, aad []byte, parts *aeadParts
 		return nil, err
 	}
 
-	// A wrong-length IV makes cipher.NewCBCDecrypter panic. Only the IV is
-	// checked: this legacy mode does not verify the tag, so its length is left
-	// as-is to avoid rejecting real Xbox Live XSTS tokens.
+	// A wrong-length IV makes cipher.NewCBCDecrypter panic. Only the IV length
+	// is checked here; the tag length is left unchanged for compatibility.
 	if len(parts.iv) != aead.NonceSize() {
 		return nil, ErrCryptoFailure
 	}
