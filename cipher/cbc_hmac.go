@@ -288,7 +288,9 @@ func padBuffer(buffer []byte, blockSize int) []byte {
 
 // Remove padding
 func unpadBuffer(buffer []byte, blockSize int) ([]byte, error) {
-	if len(buffer)%blockSize != 0 {
+	// A padded buffer can't be empty: an empty input is padded with blockSize bytes.
+	// Backport of upstream go-jose #292 (GHSA-4w3g-jfj2-cw2q).
+	if len(buffer) == 0 || len(buffer)%blockSize != 0 {
 		return nil, errors.New("square/go-jose: invalid padding")
 	}
 

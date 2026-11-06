@@ -85,10 +85,12 @@ func (obj JSONWebEncryption) mergedHeaders(recipient *recipientInfo) rawHeader {
 func (obj JSONWebEncryption) computeAuthData() []byte {
 	var protected string
 
-	if obj.original != nil {
+	if obj.original != nil && obj.original.Protected != nil {
 		protected = obj.original.Protected.base64()
-	} else {
+	} else if obj.protected != nil {
 		protected = base64.RawURLEncoding.EncodeToString(mustSerializeJSON((obj.protected)))
+	} else {
+		protected = ""
 	}
 
 	output := []byte(protected)
@@ -198,10 +200,11 @@ func (parsed *rawJSONWebEncryption) sanitized() (*JSONWebEncryption, error) {
 
 // parseEncryptedCompact parses a message in compact format.
 func parseEncryptedCompact(input string) (*JSONWebEncryption, error) {
-	parts := strings.Split(input, ".")
-	if len(parts) != 5 {
+	// Five parts is four separators (backport of upstream fix for CVE-2025-27144)
+	if strings.Count(input, ".") != 4 {
 		return nil, fmt.Errorf("square/go-jose: compact JWE format must have five parts")
 	}
+	parts := strings.SplitN(input, ".", 5)
 
 	rawProtected, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {

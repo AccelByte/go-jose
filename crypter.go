@@ -376,6 +376,9 @@ func (ctx *genericEncrypter) Options() EncrypterOptions {
 // Decrypt and validate the object and return the plaintext. Note that this
 // function does not support multi-recipient, if you desire multi-recipient
 // decryption use DecryptMulti instead.
+//
+// Automatically decompresses plaintext, but returns an error if the decompressed
+// data would be >250kB or >10x the size of the compressed data, whichever is larger.
 func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) {
 	headers := obj.mergedHeaders(nil)
 
@@ -461,7 +464,7 @@ func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) 
 	}
 
 	// The "zip" header parameter may only be present in the protected header.
-	if comp := obj.protected.getCompression(); comp != "" {
+	if comp := obj.compression(); comp != "" {
 		plaintext, err = decompress(comp, plaintext)
 	}
 
@@ -472,6 +475,9 @@ func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) 
 // with support for multiple recipients. It returns the index of the recipient
 // for which the decryption was successful, the merged headers for that recipient,
 // and the plaintext.
+//
+// Automatically decompresses plaintext, but returns an error if the decompressed
+// data would be >250kB or >10x the size of the compressed data, whichever is larger.
 func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Header, []byte, error) {
 	globalHeaders := obj.mergedHeaders(nil)
 
@@ -568,8 +574,11 @@ func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Heade
 	}
 
 	// The "zip" header parameter may only be present in the protected header.
-	if comp := obj.protected.getCompression(); comp != "" {
+	if comp := obj.compression(); comp != "" {
 		plaintext, err = decompress(comp, plaintext)
+		if err != nil {
+			return -1, Header{}, nil, err
+		}
 	}
 
 	sanitized, err := headers.sanitized()
@@ -578,4 +587,14 @@ func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Heade
 	}
 
 	return index, sanitized, plaintext, err
+}
+
+// compression returns the "zip" header parameter, which may only be present in
+// the protected header. A message without a protected header (possible in the
+// JSON serialization) is treated as uncompressed instead of panicking.
+func (obj JSONWebEncryption) compression() CompressionAlgorithm {
+	if obj.protected == nil {
+		return ""
+	}
+	return obj.protected.getCompression()
 }
