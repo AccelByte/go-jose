@@ -277,9 +277,10 @@ func (ctx aeadContentCipherDeprecated) decrypt(key, aad []byte, parts *aeadParts
 		return nil, err
 	}
 
-	// A wrong-length IV makes cipher.NewCBCDecrypter panic. Only the IV length
-	// is checked here; the tag length is left unchanged for compatibility.
-	if len(parts.iv) != aead.NonceSize() {
+	// A wrong-length IV makes cipher.NewCBCDecrypter panic. Open splits the tag
+	// off the end of ciphertext||tag, so without the tag length check bytes
+	// could be moved between the ciphertext and tag segments.
+	if len(parts.iv) != aead.NonceSize() || len(parts.tag) != ctx.authtagBytes {
 		return nil, ErrCryptoFailure
 	}
 
