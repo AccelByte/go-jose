@@ -21,9 +21,11 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha1"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -129,8 +131,9 @@ func TestRegressionJWENullAlgEnc(t *testing.T) {
 
 // legacyJWE builds a JWE using the pre-standard "A128CBC+HS256" content
 // encryption the way Decrypt expects it, so the legacy path can be exercised
-// with chosen IVs, ciphertexts and headers.
-func legacyJWE(t *testing.T, pub *rsa.PublicKey, plaintext []byte, ivLen int) (encKey string, iv, ciphertext, tag []byte) {
+// with chosen IVs, ciphertexts and headers. The tag is computed over the
+// encoded header passed in.
+func legacyJWE(t *testing.T, pub *rsa.PublicKey, header string, plaintext []byte, ivLen int) (encKey string, iv, ciphertext, tag []byte) {
 	t.Helper()
 	cek := make([]byte, 32)
 	if _, err := rand.Read(cek); err != nil {
@@ -147,6 +150,12 @@ func legacyJWE(t *testing.T, pub *rsa.PublicKey, plaintext []byte, ivLen int) (e
 	if _, err := kdf.Read(contentKey); err != nil {
 		t.Fatal(err)
 	}
+	kdf = josecipher.NewConcatKDF(crypto.SHA256, append(append([]byte{}, cek...), 0, 0, 1, 0),
+		[]byte(A128CBC_HS256_DEPRECATED), []byte{0, 0, 0, 0}, []byte{0, 0, 0, 0}, []byte("Integrity"), []byte{})
+	integrityKey := make([]byte, 32)
+	if _, err := kdf.Read(integrityKey); err != nil {
+		t.Fatal(err)
+	}
 
 	block, err := aes.NewCipher(contentKey)
 	if err != nil {
@@ -161,10 +170,14 @@ func legacyJWE(t *testing.T, pub *rsa.PublicKey, plaintext []byte, ivLen int) (e
 	ciphertext = make([]byte, len(padded))
 	cipher.NewCBCEncrypter(block, iv).CryptBlocks(ciphertext, padded)
 
+	mac := hmac.New(sha256.New, integrityKey)
+	mac.Write([]byte(strings.Join([]string{header, b64url(wrapped), b64url(iv), b64url(ciphertext)}, ".")))
+	tag = mac.Sum(nil)
+
 	if ivLen != aes.BlockSize {
 		iv = make([]byte, ivLen)
 	}
-	return b64url(wrapped), iv, ciphertext, make([]byte, 32)
+	return b64url(wrapped), iv, ciphertext, tag
 }
 
 func TestRegressionLegacyCBCDecrypt(t *testing.T) {
@@ -180,17 +193,35 @@ func TestRegressionLegacyCBCDecrypt(t *testing.T) {
 
 	t.Run("well-formed token still decrypts", func(t *testing.T) {
 		want := []byte(`{"sub":"x"}`)
-		ek, iv, ct, tag := legacyJWE(t, &key.PublicKey, want, 16)
-		got, err := decrypt(strings.Join([]string{header, ek, b64url(iv), b64url(ct), b64url(tag)}, "."))
+		ek, iv, ct, tag := legacyJWE(t, &key.PublicKey, header, want, 16)
+		token := strings.Join([]string{header, ek, b64url(iv), b64url(ct), b64url(tag)}, ".")
+		got, err := decrypt(token)
 		if err != nil || !bytes.Equal(got, want) {
 			t.Fatalf("got %q, %v; want %q", got, err, want)
+		}
+
+		obj, err := ParseEncrypted(token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _, got, err = obj.DecryptMulti(key)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Fatalf("DecryptMulti: got %q, %v; want %q", got, err, want)
+		}
+	})
+
+	t.Run("zero tag", func(t *testing.T) {
+		ek, iv, ct, _ := legacyJWE(t, &key.PublicKey, header, []byte("hello"), 16)
+		token := strings.Join([]string{header, ek, b64url(iv), b64url(ct), b64url(make([]byte, 32))}, ".")
+		if _, err := decrypt(token); err == nil {
+			t.Error("expected an error")
 		}
 	})
 
 	for _, ivLen := range []int{0, 8, 15, 17, 32} {
 		ivLen := ivLen
 		t.Run(fmt.Sprintf("iv length %d", ivLen), func(t *testing.T) {
-			ek, iv, ct, tag := legacyJWE(t, &key.PublicKey, []byte("hello"), ivLen)
+			ek, iv, ct, tag := legacyJWE(t, &key.PublicKey, header, []byte("hello"), ivLen)
 			token := strings.Join([]string{header, ek, b64url(iv), b64url(ct), b64url(tag)}, ".")
 			if err := mustNotPanic(t, "decrypt", func() error { _, err := decrypt(token); return err }); err == nil {
 				t.Error("expected an error")
@@ -199,7 +230,7 @@ func TestRegressionLegacyCBCDecrypt(t *testing.T) {
 	}
 
 	t.Run("empty ciphertext", func(t *testing.T) {
-		ek, iv, _, tag := legacyJWE(t, &key.PublicKey, []byte("hello"), 16)
+		ek, iv, _, tag := legacyJWE(t, &key.PublicKey, header, []byte("hello"), 16)
 		token := strings.Join([]string{header, ek, b64url(iv), "", b64url(tag)}, ".")
 		if err := mustNotPanic(t, "decrypt", func() error { _, err := decrypt(token); return err }); err == nil {
 			t.Error("expected an error")
@@ -207,7 +238,7 @@ func TestRegressionLegacyCBCDecrypt(t *testing.T) {
 	})
 
 	t.Run("JSON serialization without protected header", func(t *testing.T) {
-		ek, iv, ct, tag := legacyJWE(t, &key.PublicKey, []byte("hello"), 16)
+		ek, iv, ct, tag := legacyJWE(t, &key.PublicKey, "", []byte("hello"), 16)
 		token := fmt.Sprintf(`{"unprotected":{"alg":"RSA-OAEP","enc":"A128CBC+HS256"},"encrypted_key":%q,"iv":%q,"ciphertext":%q,"tag":%q}`,
 			ek, b64url(iv), b64url(ct), b64url(tag))
 		mustNotPanic(t, "Decrypt", func() error { _, err := decrypt(token); return err })

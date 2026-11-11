@@ -20,6 +20,7 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/rsa"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"reflect"
@@ -373,6 +374,38 @@ func (ctx *genericEncrypter) Options() EncrypterOptions {
 	}
 }
 
+// deprecatedContentKey derives the A128CBC+HS256 (JWE draft-08) key from the
+// CMK with the draft-08 Concat KDF: the 128-bit "Encryption" key followed by
+// the 256-bit "Integrity" key.
+func deprecatedContentKey(cmk []byte) []byte {
+	derive := func(bits uint32, label string) []byte {
+		// Copy so the appends never share cmk's backing array.
+		z := append(append([]byte{}, cmk...), byte(bits>>24), byte(bits>>16), byte(bits>>8), byte(bits))
+		out := make([]byte, bits/8)
+		kdf := josecipher.NewConcatKDF(
+			crypto.SHA256,
+			z,
+			[]byte(A128CBC_HS256_DEPRECATED),
+			[]byte{0, 0, 0, 0},
+			[]byte{0, 0, 0, 0},
+			[]byte(label),
+			[]byte{},
+		)
+		_, _ = kdf.Read(out)
+		return out
+	}
+
+	return append(derive(128, "Encryption"), derive(256, "Integrity")...)
+}
+
+// deprecatedAuthData returns the A128CBC+HS256 additional data. Unlike the
+// standard algorithms, the draft-08 tag also covers the encrypted key:
+// "<encoded header>.<encoded encrypted key>".
+func (obj JSONWebEncryption) deprecatedAuthData(recipient *recipientInfo) []byte {
+	authData := append(obj.computeAuthData(), '.')
+	return append(authData, base64.RawURLEncoding.EncodeToString(recipient.encryptedKey)...)
+}
+
 // Decrypt and validate the object and return the plaintext. Note that this
 // function does not support multi-recipient, if you desire multi-recipient
 // decryption use DecryptMulti instead.
@@ -424,36 +457,8 @@ func (obj JSONWebEncryption) Decrypt(decryptionKey interface{}) ([]byte, error) 
 	cek, err := decrypter.decryptKey(recipientHeaders, &recipient, generator)
 	if err == nil {
 		// Found a valid CEK -- let's try to decrypt.
-		// add support to A128CBC+H256 algorithm
 		if headers.getEncryption() == A128CBC_HS256_DEPRECATED {
-			cekReader := josecipher.NewConcatKDF(
-				crypto.SHA256,
-				append(cek, []byte{0, 0, 0, 128}...),
-				[]byte(A128CBC_HS256_DEPRECATED),
-				[]byte{0, 0, 0, 0},
-				[]byte{0, 0, 0, 0},
-				[]byte("Encryption"),
-				[]byte{},
-			)
-
-			cikReader := josecipher.NewConcatKDF(
-				crypto.SHA256,
-				append(cek, []byte{0, 0, 0, 128}...),
-				[]byte(A128CBC_HS256_DEPRECATED),
-				[]byte{0, 0, 0, 0},
-				[]byte{0, 0, 0, 0},
-				[]byte("Integration"),
-				[]byte{},
-			)
-
-			decryptedCEK := make([]byte, 16)
-			decryptedCIK := make([]byte, 16)
-			_, _ = cekReader.Read(decryptedCEK)
-			_, _ = cikReader.Read(decryptedCIK)
-
-			combinedKey := append(decryptedCEK, decryptedCIK...)
-
-			plaintext, err = cipher.decrypt(combinedKey, authData, parts)
+			plaintext, err = cipher.decrypt(deprecatedContentKey(cek), obj.deprecatedAuthData(&recipient), parts)
 		} else {
 			plaintext, err = cipher.decrypt(cek, authData, parts)
 		}
@@ -523,48 +528,15 @@ func (obj JSONWebEncryption) DecryptMulti(decryptionKey interface{}) (int, Heade
 		cek, err := decrypter.decryptKey(recipientHeaders, &recipient, generator)
 		if err == nil {
 			// Found a valid CEK -- let's try to decrypt.
-			// add support to A128CBC+H256 algorithm
-			if headers.getEncryption() == A128CBC_HS256_DEPRECATED {
-				cekReader := josecipher.NewConcatKDF(
-					crypto.SHA256,
-					append(cek, []byte{0, 0, 0, 128}...),
-					[]byte(A128CBC_HS256_DEPRECATED),
-					[]byte{0, 0, 0, 0},
-					[]byte{0, 0, 0, 0},
-					[]byte("Encryption"),
-					[]byte{},
-				)
-
-				cikReader := josecipher.NewConcatKDF(
-					crypto.SHA256,
-					append(cek, []byte{0, 0, 0, 128}...),
-					[]byte(A128CBC_HS256_DEPRECATED),
-					[]byte{0, 0, 0, 0},
-					[]byte{0, 0, 0, 0},
-					[]byte("Integration"),
-					[]byte{},
-				)
-
-				decryptedCEK := make([]byte, 16)
-				decryptedCIK := make([]byte, 16)
-				_, _ = cekReader.Read(decryptedCEK)
-				_, _ = cikReader.Read(decryptedCIK)
-
-				combinedKey := append(decryptedCEK, decryptedCIK...)
-
-				plaintext, err = cipher.decrypt(combinedKey, authData, parts)
-				if err == nil {
-					index = i
-					headers = recipientHeaders
-					break
-				}
+			if encryption == A128CBC_HS256_DEPRECATED {
+				plaintext, err = cipher.decrypt(deprecatedContentKey(cek), obj.deprecatedAuthData(&recipient), parts)
 			} else {
 				plaintext, err = cipher.decrypt(cek, authData, parts)
-				if err == nil {
-					index = i
-					headers = recipientHeaders
-					break
-				}
+			}
+			if err == nil {
+				index = i
+				headers = recipientHeaders
+				break
 			}
 		}
 	}
